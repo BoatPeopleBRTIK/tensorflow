@@ -17,29 +17,7 @@ else
 	endif
 endif
 
-HOST_ARCH := $(shell if [[ $(shell uname -m) =~ i[345678]86 ]]; then echo x86_32; else echo $(shell uname -m); fi)
-
-# Self-hosting
-TARGET_ARCH := ${HOST_ARCH}
-
-# Cross compiling
-ifeq ($(CROSS),rpi)
-  TARGET_ARCH := armv7l
-  TARGET_TOOLCHAIN_PREFIX := arm-linux-gnueabihf-
-endif
-
-ifeq ($(CROSS),riscv)
-  TARGET_ARCH := riscv
-  TARGET_TOOLCHAIN_PREFIX := riscv32-unknown-elf-
-endif
-ifeq ($(CROSS),stm32f7)
-  TARGET_ARCH := armf7
-  TARGET_TOOLCHAIN_PREFIX := arm-none-eabi-
-endif
-ifeq ($(CROSS),stm32f1)
-  TARGET_ARCH := armm1
-  TARGET_TOOLCHAIN_PREFIX := arm-none-eabi-
-endif
+ARCH := $(shell if [[ $(shell uname -m) =~ i[345678]86 ]]; then echo x86_32; else echo $(shell uname -m); fi)
 
 # Where compiled objects are stored.
 OBJDIR := $(MAKEFILE_DIR)/gen/obj/
@@ -47,46 +25,11 @@ BINDIR := $(MAKEFILE_DIR)/gen/bin/
 LIBDIR := $(MAKEFILE_DIR)/gen/lib/
 GENDIR := $(MAKEFILE_DIR)/gen/obj/
 
-LIBS :=
-ifeq ($(TARGET_ARCH),x86_64)
-        CXXFLAGS += -fPIC -DGEMMLOWP_ALLOW_SLOW_SCALAR_FALLBACK -pthread # -msse4.2
-endif
-
-ifeq ($(TARGET_ARCH),armv7l)
-        CXXFLAGS += -mfpu=neon -pthread -fPIC
-	LIBS += -ldl
-endif
-
-ifeq ($(TARGET_ARCH),riscv)
-#        CXXFLAGS += -march=gap8
-        CXXFLAGS += -DTFLITE_MCU
-	LIBS += -ldl
-	BUILD_TYPE := micro
-endif
-
-ifeq ($(TARGET_ARCH),armf7)
-        CXXFLAGS += -DGEMMLOWP_ALLOW_SLOW_SCALAR_FALLBACK -DTFLITE_MCU
-        CXXFLAGS += -fno-rtti -fmessage-length=0 -fno-exceptions -fno-builtin -ffunction-sections -fdata-sections
-        CXXFLAGS += -funsigned-char -MMD
-        CXXFLAGS += -mcpu=cortex-m7 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=softfp
-        CXXFLAGS += '-std=gnu++11' '-fno-rtti' '-Wvla' '-c' '-Wall' '-Wextra' '-Wno-unused-parameter' '-Wno-missing-field-initializers' '-fmessage-length=0' '-fno-exceptions' '-fno-builtin' '-ffunction-sections' '-fdata-sections' '-funsigned-char' '-MMD' '-fno-delete-null-pointer-checks' '-fomit-frame-pointer' '-Os'
-	LIBS += -ldl
-	BUILD_TYPE := micro
-endif
-ifeq ($(TARGET_ARCH),armm1)
-        CXXFLAGS += -DGEMMLOWP_ALLOW_SLOW_SCALAR_FALLBACK -mcpu=cortex-m1 -mthumb -DTFLITE_MCU
-        CXXFLAGS += -fno-rtti -fmessage-length=0 -fno-exceptions -fno-builtin -ffunction-sections -fdata-sections
-        CXXFLAGS += -funsigned-char -MMD
-	LIBS += -ldl
-endif
-
 # Settings for the host compiler.
-CXX := $(CC_PREFIX) ${TARGET_TOOLCHAIN_PREFIX}g++
-CXXFLAGS += --std=c++11 -O3 -DNDEBUG
-CCFLAGS := ${CXXFLAGS}
-CC := $(CC_PREFIX) ${TARGET_TOOLCHAIN_PREFIX}gcc
-AR := $(CC_PREFIX) ${TARGET_TOOLCHAIN_PREFIX}ar
-CFLAGS :=
+CXX := $(CC_PREFIX)gcc
+CXXFLAGS := --std=c++11 -O3 -DNDEBUG
+CC := $(CC_PREFIX)gcc
+CCFLAGS := -O3 -DNDEBUG
 LDOPTS :=
 LDOPTS += -L/usr/local/lib
 ARFLAGS := -r
@@ -105,7 +48,7 @@ INCLUDES := \
 # override local versions in the source tree.
 INCLUDES += -I/usr/local/include
 
-LIBS += \
+LIBS := \
 -lstdc++ \
 -lpthread \
 -lm \
@@ -118,6 +61,7 @@ endif
 
 include $(MAKEFILE_DIR)/ios_makefile.inc
 include $(MAKEFILE_DIR)/rpi_makefile.inc
+include $(MAKEFILE_DIR)/artik530_makefile.inc
 
 # This library is the main target for this makefile. It will contain a minimal
 # runtime that can be linked in to other programs.
@@ -126,6 +70,7 @@ LIB_PATH := $(LIBDIR)$(LIB_NAME)
 
 # A small example program that shows how to link against the library.
 MINIMAL_PATH := $(BINDIR)minimal
+LABEL_IMAGE_PATH :=$(BINDIR)label_image
 
 # Benchmark static library and binary
 BENCHMARK_LIB_NAME := benchmark-lib.a
@@ -138,6 +83,14 @@ tensorflow/contrib/lite/examples/minimal/minimal.cc
 MINIMAL_OBJS := $(addprefix $(OBJDIR), \
 $(patsubst %.cc,%.o,$(patsubst %.c,%.o,$(MINIMAL_SRCS))))
 
+LABEL_IMAGE_SRCS := \
+tensorflow/contrib/lite/examples/label_image/label_image.cc \
+tensorflow/contrib/lite/examples/label_image/bitmap_helpers.cc 
+LABEL_IMAGE_OBJS := $(addprefix $(OBJDIR), \
+$(patsubst %.cc,%.o,$(patsubst %.c,%.o,$(LABEL_IMAGE_SRCS))))
+
+
+
 # What sources we want to compile, must be kept in sync with the main Bazel
 # build files.
 
@@ -149,21 +102,18 @@ PROFILE_SUMMARIZER_SRCS := \
 
 CORE_CC_ALL_SRCS := \
 $(wildcard tensorflow/contrib/lite/*.cc) \
-$(wildcard tensorflow/contrib/lite/*.c)
-ifneq ($(BUILD_TYPE),micro)
-CORE_CC_ALL_SRCS += \
 $(wildcard tensorflow/contrib/lite/kernels/*.cc) \
 $(wildcard tensorflow/contrib/lite/kernels/internal/*.cc) \
 $(wildcard tensorflow/contrib/lite/kernels/internal/optimized/*.cc) \
 $(wildcard tensorflow/contrib/lite/kernels/internal/reference/*.cc) \
 $(PROFILER_SRCS) \
+$(wildcard tensorflow/contrib/lite/*.c) \
 $(wildcard tensorflow/contrib/lite/kernels/*.c) \
 $(wildcard tensorflow/contrib/lite/kernels/internal/*.c) \
 $(wildcard tensorflow/contrib/lite/kernels/internal/optimized/*.c) \
 $(wildcard tensorflow/contrib/lite/kernels/internal/reference/*.c) \
 $(wildcard tensorflow/contrib/lite/downloads/farmhash/src/farmhash.cc) \
 $(wildcard tensorflow/contrib/lite/downloads/fft2d/fftsg.c)
-endif
 # Remove any duplicates.
 CORE_CC_ALL_SRCS := $(sort $(CORE_CC_ALL_SRCS))
 CORE_CC_EXCLUDE_SRCS := \
@@ -172,18 +122,16 @@ $(wildcard tensorflow/contrib/lite/*/*test.cc) \
 $(wildcard tensorflow/contrib/lite/*/*/*test.cc) \
 $(wildcard tensorflow/contrib/lite/*/*/*/*test.cc) \
 $(wildcard tensorflow/contrib/lite/kernels/test_util.cc) \
-$(MINIMAL_SRCS)
-ifeq ($(BUILD_TYPE),micro)
-CORE_CC_EXCLUDE_SRCS += \
-tensorflow/contrib/lite/model.cc \
-tensorflow/contrib/lite/nnapi_delegate.cc
-endif
+$(MINIMAL_SRCS)\
+$(LABEL_IMAGE_SRCS)
+
 # Filter out all the excluded files.
 TF_LITE_CC_SRCS := $(filter-out $(CORE_CC_EXCLUDE_SRCS), $(CORE_CC_ALL_SRCS))
 # File names of the intermediate files target compilation generates.
 TF_LITE_CC_OBJS := $(addprefix $(OBJDIR), \
 $(patsubst %.cc,%.o,$(patsubst %.c,%.o,$(TF_LITE_CC_SRCS))))
 LIB_OBJS := $(TF_LITE_CC_OBJS)
+
 
 # Benchmark sources
 BENCHMARK_SRCS_DIR := tensorflow/contrib/lite/tools/benchmark
@@ -208,10 +156,8 @@ $(OBJDIR)%.o: %.c
 	$(CC) $(CCFLAGS) $(INCLUDES) -c $< -o $@
 
 # The target that's compiled if there's no command-line arguments.
-all: $(LIB_PATH)  $(MINIMAL_PATH) $(BENCHMARK_BINARY)
-
-# The target that's compiled for micro-controllers
-micro: $(LIB_PATH)
+#all: $(LIB_PATH)  $(MINIMAL_PATH) $(BENCHMARK_BINARY) $(LABEL_IMAGE_PATH)
+all: $(LIB_PATH)  $(MINIMAL_PATH) $(LABEL_IMAGE_PATH)
 
 # Gathers together all the objects we've compiled into a single '.a' archive.
 $(LIB_PATH): $(LIB_OBJS)
@@ -222,6 +168,12 @@ $(MINIMAL_PATH): $(MINIMAL_OBJS) $(LIB_PATH)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) \
 	-o $(MINIMAL_PATH) $(MINIMAL_OBJS) \
+	$(LIBFLAGS) $(LIB_PATH) $(LDFLAGS) $(LIBS)
+
+$(LABEL_IMAGE_PATH): $(LABEL_IMAGE_OBJS) $(LIB_PATH)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) \
+	-o $(LABEL_IMAGE_PATH) $(LABEL_IMAGE_OBJS) \
 	$(LIBFLAGS) $(LIB_PATH) $(LDFLAGS) $(LIBS)
 
 
